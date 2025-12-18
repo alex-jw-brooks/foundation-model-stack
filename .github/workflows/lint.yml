@@ -1,6 +1,9 @@
 name: Lint
 
-on: [pull_request]
+on:
+  # allow manual trigger for forks
+  workflow_dispatch:
+  pull_request:
 
 jobs:
   lint:
