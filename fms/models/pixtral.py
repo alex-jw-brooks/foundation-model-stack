@@ -64,8 +64,8 @@ class PixtralVisionConfig(ModelConfig):
     rope_theta: float = 10000.0
     attention_dropout: float = 0.0
     linear_config: Optional[Mapping[str, Any]] = None
-    fused_weights: bool = (True,)
-    head_dim: int = (64,)
+    fused_weights: bool = True
+    head_dim: int = 64
     initializer_range: float = 0.02
 
 

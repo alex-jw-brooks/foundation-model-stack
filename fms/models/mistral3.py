@@ -30,7 +30,6 @@ from fms.models.mistral import MistralConfig, MistralHeadless
 logger = logging.getLogger(__name__)
 
 
-
 @dataclass
 class Mistral3Config(ModelConfig):
     """
@@ -41,7 +40,6 @@ class Mistral3Config(ModelConfig):
 
     Fields default to the standard HF Mistral3 settings unless overridden.
     """
-
 
     # ----- model identity -----
     model_type: str = "mistral3"
@@ -69,12 +67,6 @@ class Mistral3Config(ModelConfig):
         """
         base = {
             "model_type": self.model_type,
-            "text_config": self.text_config.to_dict()
-            if hasattr(self.text_config, "to_dict")
-            else vars(self.text_config),
-            "vision_config": self.vision_config.to_dict()
-            if hasattr(self.vision_config, "to_dict")
-            else vars(self.vision_config),
             "text_config": self.text_config.to_dict()
             if hasattr(self.text_config, "to_dict")
             else vars(self.text_config),
