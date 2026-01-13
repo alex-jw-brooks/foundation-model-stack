@@ -16,22 +16,19 @@ from fms.distributed.strategy import (
 
 from fms.modules.attention import (
     AttentionKwargs,
-    MultiHeadAttention,
     get_attention_type,
 )
-from fms.modules.feedforward import GatedLinearUnit
-from fms.modules.layernorm import LayerNormParameterized
-from fms.modules.positions import RotaryEmbedding
+
 from fms.utils import serialization
-from fms.utils.activation import str_to_activation
 from fms.utils.config import ModelConfig
 from fms.utils.headless import gather_outputs
 
 from fms.models.pixtral import PixtralVisionConfig
-from fms.models.mistral import MistralConfig
+from fms.models.mistral import MistralConfig, MistralHeadless
 
 
 logger = logging.getLogger(__name__)
+
 
 
 @dataclass
@@ -45,8 +42,10 @@ class Mistral3Config(ModelConfig):
     Fields default to the standard HF Mistral3 settings unless overridden.
     """
 
+
     # ----- model identity -----
     model_type: str = "mistral3"
+    tie_heads: bool = False
 
     # ----- sub-configs -----
     text_config: MistralConfig = field(default_factory=MistralConfig)
@@ -76,6 +75,12 @@ class Mistral3Config(ModelConfig):
             "vision_config": self.vision_config.to_dict()
             if hasattr(self.vision_config, "to_dict")
             else vars(self.vision_config),
+            "text_config": self.text_config.to_dict()
+            if hasattr(self.text_config, "to_dict")
+            else vars(self.text_config),
+            "vision_config": self.vision_config.to_dict()
+            if hasattr(self.vision_config, "to_dict")
+            else vars(self.vision_config),
             "projector_hidden_act": self.projector_hidden_act,
             "multimodal_projector_bias": self.multimodal_projector_bias,
             "spatial_merge_size": self.spatial_merge_size,
@@ -87,254 +92,6 @@ class Mistral3Config(ModelConfig):
 
 
 _24b_config = Mistral3Config()
-
-
-class Mistral3Block(nn.Module):
-    def __init__(self, config: Mistral3Config, rotary_emb: RotaryEmbedding):
-        super(Mistral3Block, self).__init__()
-        self.config = config
-
-        emb_kq = config.head_dim
-        emb_v = config.head_dim
-
-        self.ln = LayerNormParameterized(
-            self.config.emb_dim,
-            elementwise_scale=True,
-            elementwise_shift=False,
-            use_mean=False,
-            eps=self.config.norm_eps,
-            use_high_precision_pow=True,
-        )
-        self.ff_ln = LayerNormParameterized(
-            self.config.emb_dim,
-            elementwise_scale=True,
-            elementwise_shift=False,
-            use_mean=False,
-            eps=self.config.norm_eps,
-            use_high_precision_pow=True,
-        )
-
-        if self.config.kvheads == 0:
-            kvheads = self.config.nheads
-        else:
-            kvheads = self.config.kvheads
-            assert self.config.nheads % self.config.kvheads == 0
-
-        self.attn = MultiHeadAttention(
-            self.config.emb_dim,
-            emb_kq,
-            emb_v,
-            self.config.nheads,
-            kvheads,
-            p_dropout=self.config.p_dropout,
-            use_bias=False,
-            position_encoder=rotary_emb,
-            fused=self.config.fused_weights,
-            linear_config=self.config.linear_config,
-        )
-        self.ff_sub_layer = GatedLinearUnit(
-            self.config.emb_dim,
-            hidden_grow_factor=self.config.hidden_grow_factor,
-            multiple_of=self.config.multiple_of,
-            activation_fn=str_to_activation(self.config.activation_fn),
-            p_dropout=self.config.p_dropout,
-            use_bias=False,
-            fused=self.config.fused_weights,
-            linear_config=self.config.linear_config,
-        )
-
-        if self.config.p_dropout != 0:
-            self.dropout = nn.Dropout(self.config.p_dropout)
-
-    def forward(
-        self,
-        x,
-        *,
-        position_ids=None,
-        past_key_value_state=None,
-        use_cache=False,
-        **attn_kwargs: Unpack[AttentionKwargs],
-    ):
-        # if the cache is not empty, we need to get the kv cache for self and cross attention
-        self_attn_past_key_value = past_key_value_state
-
-        # first we do MHA and Add&Norm
-        residual = x
-        x = self.ln(x)
-        x = self.attn(
-            q=x,
-            position_ids=position_ids,
-            past_key_value_state=self_attn_past_key_value,
-            use_cache=use_cache,
-            **attn_kwargs,
-        )
-        cache = None
-        if use_cache:
-            x, cache = x
-        if self.config.p_dropout != 0:
-            x = self.dropout(x)
-        # residual connection
-        x = x + residual
-
-        # then we do FF and Add&Norm
-        residual = x
-        x = self.ff_ln(x)
-        x = self.ff_sub_layer(x)
-        if self.config.p_dropout != 0:
-            x = self.dropout(x)
-        # another residual
-        x = x + residual
-
-        if use_cache:
-            return (x, cache)
-        else:
-            return x
-
-
-class Mistral3Headless(nn.Module):
-    def __init__(
-        self,
-        config: Mistral3Config,
-        distributed_strategy: DistributedStrategy = NoOpStrategy,
-    ):
-        super(Mistral3Headless, self).__init__()
-        self.config = config
-        self.distributed_strategy = distributed_strategy
-
-        self.embedding = nn.Embedding(
-            self.config.src_vocab_size,
-            self.config.emb_dim,
-            padding_idx=self.config.pad_id,
-        )
-
-        self.rot_emb = RotaryEmbedding(
-            dim=self.config.head_dim,
-            scaling=self.config.rope_scaling,
-            max_seq_len=self.config.max_expected_seq_len,
-            ratio=self.config.rope_base,
-        )
-        # RoPE init
-        for device in set(
-            [param.device for param in self.parameters()]
-            + [buffer.device for buffer in self.buffers()]
-        ):
-            self.rot_emb.compute_freqs_cis(device, self.config.max_expected_seq_len)
-
-        layers = []
-        for i in range(self.config.nlayers):
-            block: nn.Module = Mistral3Block(self.config, self.rot_emb)
-            block = self.distributed_strategy.distribute_layer(block, i)
-            layers.append(block)
-        self.layers = nn.ModuleList(layers)
-
-        dec_norm = LayerNormParameterized(
-            self.config.emb_dim,
-            elementwise_scale=True,
-            elementwise_shift=False,
-            use_mean=False,
-            eps=self.config.norm_eps,
-            use_high_precision_pow=True,
-        )
-        self.dec_norm = self.distributed_strategy.distribute_module(
-            dec_norm, final_layers=True
-        )
-
-        if self.config.p_dropout:
-            self.dropout = nn.Dropout(self.config.p_dropout)
-
-    def reset_parameters(self):
-        nn.init.trunc_normal_(
-            self.embedding.weight, mean=0.0, std=self.config.emb_dim**-0.5
-        )
-
-        # RoPE init
-        for device in set(
-            [param.device for param in self.parameters()]
-            + [buffer.device for buffer in self.buffers()]
-        ):
-            self.rot_emb.compute_freqs_cis(device, self.config.max_expected_seq_len)
-
-        # Call reset_parameters for relevant sub-layers
-        for m in self.modules():
-            if (
-                isinstance(m, MultiHeadAttention)
-                or isinstance(m, GatedLinearUnit)
-                or isinstance(m, LayerNormParameterized)
-            ):
-                m.reset_parameters()
-
-    def _clean_up_rot_emb_cache(
-        self,
-        cached_freqs: dict[Optional[torch.device], dict[int, torch.Tensor]],
-        max_seq_len_cached: dict[Optional[torch.device], int],
-    ):
-        # remove meta tensors from cached_freqs
-        for dev in list(cached_freqs.keys()):
-            for alp in list(cached_freqs[dev].keys()):
-                if cached_freqs[dev][alp].device == torch.device("meta"):
-                    del cached_freqs[dev][alp]
-                    if len(cached_freqs[dev]) == 0:
-                        del cached_freqs[dev]
-                        del max_seq_len_cached[dev]
-
-    def post_init(self):
-        # This function is called in `get_model` after the model is
-        # fully initalized on the correct device
-
-        self._clean_up_rot_emb_cache(
-            self.rot_emb.cached_freqs,
-            self.rot_emb.max_seq_len_cached,
-        )
-
-        # init RoPE on the right device(s)
-        for device in set(
-            [param.device for param in self.parameters()]
-            + [buffer.device for buffer in self.buffers()]
-        ):
-            self.rot_emb.compute_freqs_cis(device, self.config.max_expected_seq_len)
-
-    def forward(
-        self,
-        x_in,
-        position_ids=None,
-        past_key_value_states=None,
-        use_cache=False,
-        **attn_kwargs: Unpack[AttentionKwargs],
-    ):
-        # Embed the given vocabulary indices using the given attention mask, with pre-/post-norm and dropout as specified
-        # x_in: batch_size x seq_len
-        # mask: batch_size x seq_len x seq_len
-        # bias: nheads x seq_len x seq_len
-        if past_key_value_states is None or len(past_key_value_states) == 0:
-            past_key_value_states = [None for _ in range(len(self.layers))]
-
-        x_in = self.embedding(x_in)
-
-        # this is the output cache for all the decoder layers
-        present_key_value_states = []
-
-        for i, layer in enumerate(self.layers):
-            output = layer(
-                x=x_in,
-                position_ids=position_ids,
-                past_key_value_state=past_key_value_states[i],
-                use_cache=use_cache,
-                **attn_kwargs,
-            )
-
-            if use_cache:
-                x_in, present_key_value_state = output
-                present_key_value_states.append(present_key_value_state)
-
-            else:
-                x_in = output
-
-        dec_out = x_in
-        dec_out = self.dec_norm(dec_out)
-        if self.config.p_dropout:
-            dec_out = self.dropout(dec_out)
-
-        return dec_out, present_key_value_states
 
 
 class Mistral3(nn.Module):
@@ -355,32 +112,43 @@ class Mistral3(nn.Module):
         self.config.text_config = self.config.text_config.updated(**kwargs)
         self.config.vision_config = self.config.vision_config.updated(**kwargs)
 
-        self.config = self.config.text_config
+        # Text Only for now
+        # self.config = self.config.text_config
 
         self.distributed_strategy = distributed_strategy
 
-        self.base_model = Mistral3Headless(self.config, self.distributed_strategy)
+        self.base_model = MistralHeadless(
+            self.config.text_config, self.distributed_strategy
+        )
         self.head = nn.Linear(
-            self.config.emb_dim, self.config.src_vocab_size, bias=False
+            self.config.text_config.emb_dim,
+            self.config.text_config.src_vocab_size,
+            bias=False,
         )
 
     @classmethod
     def from_config(cls, config: Mistral3Config) -> "Mistral3":
         return cls(config)
 
-    def get_config(self) -> Mistral3Config:
-        return self.config
+    def get_config(self) -> ModelConfig:
+        return self.config.text_config
 
     def reset_parameters(self):
         self.head.weight.data.normal_(
             0,
-            1 / math.sqrt(math.sqrt(self.config.emb_dim * self.config.src_vocab_size)),
+            1
+            / math.sqrt(
+                math.sqrt(
+                    self.config.text_config.emb_dim
+                    * self.config.text_config.src_vocab_size
+                )
+            ),
         )
         self.base_model.reset_parameters()
 
     def post_init(self):
         # if this model ties weights, they are tied here
-        if self.config.tie_heads:
+        if self.config.text_config.tie_heads:
             # handle assignment of non-meta weights to meta parameters
             if self.head.weight.device == torch.device("meta"):
                 self.head.weight = self.base_model.embedding.weight
@@ -460,8 +228,9 @@ serialization.register_adapter_step(_architecture_name, "weight_fusion", _weight
 
 
 def _hf_gptq_mistral3_check(
-    input_sd: Mapping[str, Any], model_config: Optional[Mistral3Config] = None, **kwargs
+    input_sd: Mapping[str, Any], model_config: Optional[MistralConfig] = None, **kwargs
 ) -> Mapping[str, Any]:
+    model_config = model_config.text_config  # type: ignore[union-attr]
     has_fused_weights = True
     linear_type = "torch_linear"
     if model_config:
@@ -486,6 +255,7 @@ serialization.register_adapter_step(
 def _hf_to_fms_names(input_sd: Mapping[str, Any], **kwargs) -> Mapping[str, Any]:
     replacements = replacements = [
         # Language Model
+        # Language Model
         (r"^language_model.lm_head.weight", "head.weight"),
         (r"^language_model.model.embed_tokens.weight", "base_model.embedding.weight"),
         (r"^language_model.model.norm", "base_model.dec_norm"),
@@ -500,12 +270,15 @@ def _hf_to_fms_names(input_sd: Mapping[str, Any], **kwargs) -> Mapping[str, Any]
         (r"input_layernorm", "ln"),
         (r"post_attention_layernorm", "ff_ln"),
         # Vision Model
+        # Vision Model
         (r"feed_forward\.gate_proj", "ff_sub_layer.wg"),
         (r"feed_forward\.up_proj", "ff_sub_layer.w1"),
+        (r"feed_forward\.down_proj", "ff_sub_layer.w2"),
         (r"feed_forward\.down_proj", "ff_sub_layer.w2"),
         (r"attention\.k_proj", "attn.in_proj.key"),
         (r"attention\.v_proj", "attn.in_proj.value"),
         (r"attention\.q_proj", "attn.in_proj.query"),
+        (r"attention\.o_proj", "attn.dense"),
         (r"attention\.o_proj", "attn.dense"),
     ]
     new_sd = {}
@@ -530,12 +303,12 @@ def _get_rope_params(linear_type: str) -> list[str]:
 
 
 def _hf_to_fms_rope(
-    input_sd: Mapping[str, Any], model_config: Optional[Mistral3Config] = None, **kwargs
+    input_sd: Mapping[str, Any], model_config: Optional[MistralConfig] = None, **kwargs
 ) -> Mapping[str, Any]:
     new_sd = {}
-
+    model_config = model_config.text_config  # type: ignore[union-attr]
     if model_config:
-        head_size = model_config.emb_dim // model_config.nheads
+        head_size = model_config.head_dim
         linear_type = "torch_linear"
         if model_config.linear_config:
             linear_type = model_config.linear_config["linear_type"]
@@ -546,7 +319,7 @@ def _hf_to_fms_rope(
 
     rope_params = _get_rope_params(linear_type)
     trans_required_pattern = re.compile(
-        f"layers.[0-9]+.attn.in_proj.(query|key).({'|'.join(rope_params)})"
+        f"base_model.layers.[0-9]+.attn.in_proj.(query|key).({'|'.join(rope_params)})"
     )
     for name, param in input_sd.items():
         # hf -> fms requires a transpose operation for the query and key
@@ -560,7 +333,7 @@ def _hf_to_fms_rope(
         # Therefore, to make FMS produce the correct order of outputs when
         # loading from an HF checkpoint, we need to undo the transformation
         # that HF does from the original Meta weights:
-        if bool(trans_required_pattern.match(name)):
+        if bool(trans_required_pattern.search(name)):
             temp = param
             if "gptq" in linear_type and temp.dim() == 2:
                 # GPTQ qweights are [in_feat, out_feat] (unlike usual [out_feat, in_feat])
