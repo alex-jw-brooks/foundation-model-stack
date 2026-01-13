@@ -333,7 +333,7 @@ def build_mistral3_params(config: PretrainedConfig) -> dict:
     vision_config_params = build_pixtral_params(config.vision_config)
     # Instantiate FMS config objects for each modality
     config_params["text_config"] = MistralConfig(**text_config_params)
-    config_params["vision_config"] = PixtralVisionConfig(**vision_config_params) # type: ignore[assignment]
+    config_params["vision_config"] = PixtralVisionConfig(**vision_config_params)  # type: ignore[assignment]
     # Top-level Mistral3 multimodal parameters pass-through
     config_params["projector_hidden_act"] = config.projector_hidden_act
     config_params["multimodal_projector_bias"] = config.multimodal_projector_bias
