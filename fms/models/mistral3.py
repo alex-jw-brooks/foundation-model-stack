@@ -1,5 +1,4 @@
 import logging
-import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional, Tuple
@@ -14,17 +13,13 @@ from fms.distributed.strategy import (
     NoOpStrategy,
 )
 
-from fms.modules.attention import (
-    AttentionKwargs,
-    get_attention_type,
-)
+from fms.modules.attention import AttentionKwargs
 
 from fms.utils import serialization
 from fms.utils.config import ModelConfig
-from fms.utils.headless import gather_outputs
 
 from fms.models.pixtral import PixtralVisionConfig
-from fms.models.mistral import MistralConfig, MistralHeadless
+from fms.models.mistral import MistralConfig, Mistral
 
 
 logger = logging.getLogger(__name__)
@@ -109,13 +104,8 @@ class Mistral3(nn.Module):
 
         self.distributed_strategy = distributed_strategy
 
-        self.base_model = MistralHeadless(
+        self.language_model = Mistral(
             self.config.text_config, self.distributed_strategy
-        )
-        self.head = nn.Linear(
-            self.config.text_config.emb_dim,
-            self.config.text_config.src_vocab_size,
-            bias=False,
         )
 
     @classmethod
@@ -126,55 +116,28 @@ class Mistral3(nn.Module):
         return self.config.text_config
 
     def reset_parameters(self):
-        self.head.weight.data.normal_(
-            0,
-            1
-            / math.sqrt(
-                math.sqrt(
-                    self.config.text_config.emb_dim
-                    * self.config.text_config.src_vocab_size
-                )
-            ),
-        )
-        self.base_model.reset_parameters()
+        self.language_model.reset_parameters()
 
     def post_init(self):
-        # if this model ties weights, they are tied here
-        if self.config.text_config.tie_heads:
-            # handle assignment of non-meta weights to meta parameters
-            if self.head.weight.device == torch.device("meta"):
-                self.head.weight = self.base_model.embedding.weight
-            else:
-                self.base_model.embedding.weight = self.head.weight
-
-        self.base_model.post_init()
+        # Language model post init will handle head tying etc.
+        self.language_model.post_init()
 
     def forward(
         self,
-        x: torch.LongTensor,
+        input_ids_or_embeds: torch.Tensor,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value_states: Optional[Tuple[torch.FloatTensor,]] = None,
         use_cache: bool = False,
-        last_n_tokens: int = 0,
         **attn_kwargs: Unpack[AttentionKwargs],
     ):
-        get_attention_type(**attn_kwargs)["validate_attn_kwargs"](
-            input_ids=x,
+        outputs = self.language_model(
+            input_ids_or_embeds,
             position_ids=position_ids,
             past_key_value_states=past_key_value_states,
+            use_cache=use_cache,
             **attn_kwargs,
         )
-        output, cache = self.base_model(
-            x, position_ids, past_key_value_states, use_cache, **attn_kwargs
-        )
-
-        output = gather_outputs(output, last_n_tokens, **attn_kwargs)
-        preds = self.head(output)
-
-        if use_cache:
-            return preds, cache
-        else:
-            return preds
+        return outputs
 
 
 _architecture_name = "mistral3"
@@ -247,11 +210,13 @@ serialization.register_adapter_step(
 def _hf_to_fms_names(input_sd: Mapping[str, Any], **kwargs) -> Mapping[str, Any]:
     replacements = replacements = [
         # Language Model
-        # Language Model
-        (r"^language_model.lm_head.weight", "head.weight"),
-        (r"^language_model.model.embed_tokens.weight", "base_model.embedding.weight"),
-        (r"^language_model.model.norm", "base_model.dec_norm"),
-        (r"^language_model.model.layers", "base_model.layers"),
+        (r"^language_model.lm_head.weight", "language_model.head.weight"),
+        (
+            r"^language_model.model.embed_tokens.weight",
+            "language_model.base_model.embedding.weight",
+        ),
+        (r"^language_model.model.norm", "language_model.base_model.dec_norm"),
+        (r"^language_model.model.layers", "language_model.base_model.layers"),
         (r"self_attn\.k_proj", "attn.in_proj.key"),
         (r"self_attn\.v_proj", "attn.in_proj.value"),
         (r"self_attn\.q_proj", "attn.in_proj.query"),
@@ -311,7 +276,7 @@ def _hf_to_fms_rope(
 
     rope_params = _get_rope_params(linear_type)
     trans_required_pattern = re.compile(
-        f"base_model.layers.[0-9]+.attn.in_proj.(query|key).({'|'.join(rope_params)})"
+        f"language_model.base_model.layers.[0-9]+.attn.in_proj.(query|key).({'|'.join(rope_params)})"
     )
     for name, param in input_sd.items():
         # hf -> fms requires a transpose operation for the query and key
