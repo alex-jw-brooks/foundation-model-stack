@@ -18,7 +18,7 @@ from fms.modules.attention import AttentionKwargs
 from fms.utils import serialization
 from fms.utils.config import ModelConfig
 
-from fms.models.pixtral import PixtralVisionConfig
+from fms.models.pixtral import PixtralVisionConfig, PixtralVision
 from fms.models.mistral import MistralConfig, Mistral
 
 
@@ -76,14 +76,18 @@ class Mistral3(nn.Module):
         self.config.text_config = self.config.text_config.updated(**kwargs)
         self.config.vision_config = self.config.vision_config.updated(**kwargs)
 
-        # Text Only for now
-        # self.config = self.config.text_config
-
         self.distributed_strategy = distributed_strategy
 
+        # Currently, we always use mistral / pixtral for the
+        # LLM and vision tower, respectively.
         self.language_model = Mistral(
             self.config.text_config, self.distributed_strategy
         )
+
+        self.vision_tower = PixtralVision(
+            self.config.vision_config, distributed_strategy
+        )
+
 
     @classmethod
     def from_config(cls, config: Mistral3Config) -> "Mistral3":
@@ -98,6 +102,14 @@ class Mistral3(nn.Module):
     def post_init(self):
         # Language model post init will handle head tying etc.
         self.language_model.post_init()
+
+    def prepare_inputs_for_generation(
+        self,
+        iteration,
+        input_ids,
+        kwargs,
+    ):
+        raise NotImplementedError("TODO - Embed / encoder as prefill hook")
 
     def forward(
         self,
