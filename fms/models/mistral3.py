@@ -55,29 +55,6 @@ class Mistral3Config(ModelConfig):
 
     fused_weights: bool = True  # FMS Specific -- For CPU/GPU = T, AIU = F
 
-    def to_dict(self) -> Dict[str, Any]:
-        """
-        Convert to a plain dict with nested sub-config dicts, matching the HF
-        layout closely so downstream loaders can reuse it.
-        """
-        base = {
-            "model_type": self.model_type,
-            "text_config": self.text_config.to_dict()
-            if hasattr(self.text_config, "to_dict")
-            else vars(self.text_config),
-            "vision_config": self.vision_config.to_dict()
-            if hasattr(self.vision_config, "to_dict")
-            else vars(self.vision_config),
-            "projector_hidden_act": self.projector_hidden_act,
-            "multimodal_projector_bias": self.multimodal_projector_bias,
-            "spatial_merge_size": self.spatial_merge_size,
-            "image_token_index": self.image_token_index,
-            "vision_feature_layer": self.vision_feature_layer,
-            "fused_weights": self.fused_weights,
-        }
-        return base
-
-
 _24b_config = Mistral3Config()
 
 
