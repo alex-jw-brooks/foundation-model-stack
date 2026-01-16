@@ -215,8 +215,9 @@ class PixtralVision(nn.Module):
         self.patch_size = self.config.patch_size
         self.image_size = self.config.image_size
 
+        # FIXME - Add implementation for 2D RoPE, seems to be missing
         rope_scaling = {
-            "rope_type": "pixtral",
+            "rope_type": "regular",
             "max_patches_per_side": self.image_size // self.patch_size,
         }
 
