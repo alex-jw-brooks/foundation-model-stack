@@ -1,7 +1,7 @@
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 from typing_extensions import Unpack
 
 import torch
@@ -51,6 +51,7 @@ class Mistral3Config(ModelConfig):
 
     fused_weights: bool = True  # FMS Specific -- For CPU/GPU = T, AIU = F
 
+
 _24b_config = Mistral3Config()
 
 
@@ -77,7 +78,6 @@ class Mistral3(nn.Module):
         self.language_model = Mistral(
             self.config.text_config, self.distributed_strategy
         )
-
 
     @classmethod
     def from_config(cls, config: Mistral3Config) -> "Mistral3":
@@ -206,15 +206,12 @@ def _hf_to_fms_names(input_sd: Mapping[str, Any], **kwargs) -> Mapping[str, Any]
         (r"input_layernorm", "ln"),
         (r"post_attention_layernorm", "ff_ln"),
         # Vision Model
-        # Vision Model
         (r"feed_forward\.gate_proj", "ff_sub_layer.wg"),
         (r"feed_forward\.up_proj", "ff_sub_layer.w1"),
-        (r"feed_forward\.down_proj", "ff_sub_layer.w2"),
         (r"feed_forward\.down_proj", "ff_sub_layer.w2"),
         (r"attention\.k_proj", "attn.in_proj.key"),
         (r"attention\.v_proj", "attn.in_proj.value"),
         (r"attention\.q_proj", "attn.in_proj.query"),
-        (r"attention\.o_proj", "attn.dense"),
         (r"attention\.o_proj", "attn.dense"),
     ]
     new_sd = {}
