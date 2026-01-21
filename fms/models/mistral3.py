@@ -18,7 +18,6 @@ from fms.modules.attention import AttentionKwargs
 from fms.utils import serialization
 from fms.utils.config import ModelConfig
 
-from fms.models.pixtral import PixtralVisionConfig, PixtralVision
 from fms.models.mistral import MistralConfig, Mistral
 
 
@@ -30,9 +29,7 @@ class Mistral3Config(ModelConfig):
     """
     Composite configuration for the FMS Mistral3 multimodal model.
 
-    This wraps a Mistral (text) config and a Pixtral (vision) config, plus
-    projector / patch-merging parameters needed by the Mistral3 multimodal stack.
-
+    This wraps a Mistral (text) config for Mistral3 - Pixtral is not added yet.
     Fields default to the standard HF Mistral3 settings unless overridden.
     """
 
@@ -42,7 +39,6 @@ class Mistral3Config(ModelConfig):
 
     # ----- sub-configs -----
     text_config: MistralConfig = field(default_factory=MistralConfig)
-    vision_config: PixtralVisionConfig = field(default_factory=PixtralVisionConfig)
 
     # ----- multimodal projector / merger knobs -----
     projector_hidden_act: str = "gelu"
@@ -74,18 +70,12 @@ class Mistral3(nn.Module):
 
         self.config = self.config.updated(**kwargs)
         self.config.text_config = self.config.text_config.updated(**kwargs)
-        self.config.vision_config = self.config.vision_config.updated(**kwargs)
 
         self.distributed_strategy = distributed_strategy
 
-        # Currently, we always use mistral / pixtral for the
-        # LLM and vision tower, respectively.
+        # Currently, we always use mistral for the LLM
         self.language_model = Mistral(
             self.config.text_config, self.distributed_strategy
-        )
-
-        self.vision_tower = PixtralVision(
-            self.config.vision_config, distributed_strategy
         )
 
 
@@ -109,7 +99,7 @@ class Mistral3(nn.Module):
         input_ids,
         kwargs,
     ):
-        raise NotImplementedError("TODO - Embed / encoder as prefill hook")
+        raise NotImplementedError("TODO - Embed w/ pixtral as prefill hook")
 
     def forward(
         self,
