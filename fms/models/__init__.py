@@ -514,7 +514,7 @@ __all__ = [
     "llama",
     "llava_next",
     "mistral",
-    "mistral3",
+    # "mistral3",
     "mixtral",
     "roberta",
     "siglip_vision",
