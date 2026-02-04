@@ -317,33 +317,33 @@ def build_pixtral_params(config: PretrainedConfig) -> dict:
     return config_params
 
 
-# def build_mistral3_params(config: PretrainedConfig) -> dict:
-#     """Param builder for mapping Mistral3ForConditionalGeneration to FMS."""
+def build_mistral3_params(config: PretrainedConfig) -> dict:
+    """Param builder for mapping Mistral3ForConditionalGeneration to FMS."""
 
-#     # Sanity checks – we currently support only Mistral text + Pixtral vision
-#     if getattr(config.text_config, "model_type", None) != "mistral":
-#         raise ValueError(
-#             "FMS implementation of Mistral3 currently supports only 'mistral' language model"
-#         )
+    # Sanity checks – we currently support only Mistral text + Pixtral vision
+    if getattr(config.text_config, "model_type", None) != "mistral":
+        raise ValueError(
+            "FMS implementation of Mistral3 currently supports only 'mistral' language model"
+        )
 
-#     if getattr(config.vision_config, "model_type", None) != "pixtral":
-#         raise ValueError(
-#             "FMS implementation of Mistral3 currently supports only 'pixtral' vision tower"
-#         )
-#     config_params = {
-#         "projector_hidden_act": config.projector_hidden_act,
-#         "multimodal_projector_bias": config.multimodal_projector_bias,
-#         "spatial_merge_size": config.spatial_merge_size,
-#         "image_token_index": config.image_token_index,
-#         "vision_feature_layer": config.vision_feature_layer,
-#     }
-#     # Handle text / vision subconfigs, respectively
-#     text_config_params = build_mistral_params(config.text_config)
-#     config_params["text_config"] = MistralConfig(**text_config_params)
+    if getattr(config.vision_config, "model_type", None) != "pixtral":
+        raise ValueError(
+            "FMS implementation of Mistral3 currently supports only 'pixtral' vision tower"
+        )
+    config_params = {
+        "projector_hidden_act": config.projector_hidden_act,
+        "multimodal_projector_bias": config.multimodal_projector_bias,
+        "spatial_merge_size": config.spatial_merge_size,
+        "image_token_index": config.image_token_index,
+        "vision_feature_layer": config.vision_feature_layer,
+    }
+    # Handle text / vision subconfigs, respectively
+    text_config_params = build_mistral_params(config.text_config)
+    config_params["text_config"] = MistralConfig(**text_config_params)
 
-#     vision_config_params = build_pixtral_params(config.vision_config)
-#     config_params["vision_config"] = PixtralVisionConfig(**vision_config_params)
-#     return config_params
+    vision_config_params = build_pixtral_params(config.vision_config)
+    config_params["vision_config"] = PixtralVisionConfig(**vision_config_params)
+    return config_params
 
 
 def model_params_with_common_opts(
