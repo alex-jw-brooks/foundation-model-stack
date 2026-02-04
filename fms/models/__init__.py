@@ -500,7 +500,6 @@ from fms.models import (  # noqa: E402
     llama,
     llava_next,
     mistral,
-    mistral3,
     mixtral,
     roberta,
     siglip_vision,
