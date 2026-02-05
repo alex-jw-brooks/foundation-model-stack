@@ -108,7 +108,7 @@ def _get_fms_model_output(model_path, inputs, max_new_tokens=6):
     return output
 
 
-# @pytest.mark.slow
+@pytest.mark.slow
 def test_mistral3_24b_equivalence():
     from transformers import AutoProcessor
 
