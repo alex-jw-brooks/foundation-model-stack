@@ -8,7 +8,6 @@ from fms.models import get_model
 from fms.utils.generation import generate, pad_input_ids
 
 device = "cuda"
-torch.set_default_dtype(torch.bfloat16)
 
 
 def load_system_prompt(repo_id: str, filename: str) -> str:
@@ -67,7 +66,7 @@ def _get_inputs(processor, model_path):
 def _get_hf_model_output(model_path, inputs, max_new_tokens=6):
     from transformers import AutoModelForImageTextToText
 
-    model = AutoModelForImageTextToText.from_pretrained(model_path).to(device)
+    model = AutoModelForImageTextToText.from_pretrained(model_path, torch_dtype=torch.bfloat16).to(device)
     model.eval()
     with torch.no_grad():
         output = model.generate(
@@ -109,7 +108,7 @@ def _get_fms_model_output(model_path, inputs, max_new_tokens=6):
     return output
 
 
-@pytest.mark.slow
+# @pytest.mark.slow
 def test_mistral3_24b_equivalence():
     from transformers import AutoProcessor
 
@@ -120,7 +119,7 @@ def test_mistral3_24b_equivalence():
     # Further, we use bf16 to allow this test to run on a single (large) GPU,
     # e.g., h100. As such, we only check a very short sequence for equivalence
     # in this test.
-    model_path = "/path/to/Mistral-Small-3.1-24B-Instruct-2503"
+    model_path = "/proj/long-multi/alex/mistral31_hf"
 
     # NOTE: Mistral 3.2 doesn't have the HF processor config in the checkpoint,
     # so we use the processor from Mistral 3.1 which is compatible
